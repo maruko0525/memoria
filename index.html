@@ -49,25 +49,31 @@ function parseProgramText(raw){
  const normalized=String(raw).normalize('NFKC').replace(/\r/g,'').replace(/[\u00a0\u3000]/g,' ');
  const lines=normalized.split('\n').map(x=>x.trim()).filter(Boolean);
  const out=[];
- // Combine adjacent fragments when the PDF puts the event name, grade and time on separate lines.
+ // Try line-based extraction, allowing broken rows across up to four lines.
  for(let i=0;i<lines.length;i++){
   const start=lines[i].match(/^(\d{1,2})\s+(.+)/);
   if(!start)continue;
   const number=+start[1];if(number<1||number>99)continue;
   let match=null;
-  for(let j=i;j<Math.min(i+4,lines.length);j++){
+  for(let j=i;j<Math.min(i+5,lines.length);j++){
    if(j>i && /^\d{1,2}\s+\S/.test(lines[j]))break;
    const joined=lines.slice(i,j+1).join(' ');
    match=joined.match(/^\d{1,2}\s+(.+?)\s+(全学年|[123]年生|クラブ|部活動|全員)\s+([0-2]?\d\s*:\s*[0-5]\d)/);
-   if(match){i=j;break}
+   if(match)break;
   }
   if(!match)continue;
   const grade=/全学年|全員/.test(match[2])?'all':/クラブ|部活動/.test(match[2])?'club':match[2].match(/[123]/)?.[0]||'all';
-  if(out.some(e=>e.number===number))continue;
-  out.push({number,name:match[1].trim(),grade,time:normTime(match[3]),actual:'',highlight:'',spot:''});
+  if(!out.some(e=>e.number===number))out.push({number,name:match[1].trim(),grade,time:normTime(match[3]),actual:'',highlight:'',spot:''});
  }
  return out.sort((a,b)=>a.number-b.number);
 }
+function programWarnings(rows){
+ const nums=rows.map(x=>x.number).filter(Number.isInteger).sort((a,b)=>a-b);
+ const missing=[];
+ if(nums.length){for(let n=nums[0];n<=nums[nums.length-1];n++)if(!nums.includes(n))missing.push(n)}
+ return missing.length?'⚠️ 競技番号 '+missing.join('、')+' が抜けています。PDFと照合し、足りない競技を追加してください。':'';
+}
+
 function reviewProgram(){
  const host=$('reviewRows');host.innerHTML='';
  importedRows.forEach((e,i)=>{
@@ -80,14 +86,14 @@ function reviewProgram(){
 $('addProgramRow').onclick=()=>{importedRows.push({number:importedRows.length+1,name:'',grade:'all',time:'',actual:'',highlight:'',spot:''});reviewProgram()};
 $('parseProgram').onclick=()=>{
  importedRows=parseProgramText($('programText').value);
- $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出しました。必ず内容を確認してください。`:'競技を自動抽出できませんでした。行を追加して手入力できます。';
+ $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出しました。${programWarnings(importedRows)} 必ず内容を確認してください。`:'競技を自動抽出できませんでした。行を追加して手入力できます。';
  reviewProgram();
 };
 $('programFile').onchange=async e=>{
  const f=e.target.files[0];if(!f)return;
  $('programStatus').textContent='読み取り中…';
  try{
-  let content='';
+  let content='';window.__memoriaNativeText='';
   if(/\.pdf$/i.test(f.name)||f.type==='application/pdf'){
    if(!window.pdfjsLib){
     const script=document.createElement('script');script.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
@@ -97,20 +103,26 @@ $('programFile').onchange=async e=>{
    const doc=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
    for(let i=1;i<=doc.numPages;i++){
     const pg=await doc.getPage(i),tc=await pg.getTextContent();
+    const nativeLines=[];let nativeLine='';for(const item of tc.items){nativeLine+=(item.str||'')+' ';if(item.hasEOL){nativeLines.push(nativeLine);nativeLine=''}}if(nativeLine.trim())nativeLines.push(nativeLine);
+    const nativeText=nativeLines.join('\n');
     // Group fragments into visual lines by their vertical positions.
     const groups=new Map();
     for(const item of tc.items){if(!item.str?.trim())continue;const y=Math.round(item.transform[5]/3)*3;const arr=groups.get(y)||[];arr.push({x:item.transform[4],str:item.str});groups.set(y,arr)}
-    content+=[...groups.entries()].sort((a,b)=>b[0]-a[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(v=>v.str).join(' ')).join('\n')+'\n';
+    const visualText=[...groups.entries()].sort((a,b)=>b[0]-a[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(v=>v.str).join(' ')).join('\n');
+    // Native PDF order and visual-row order can differ. Retain both and select the most complete parse.
+    content+=visualText+'\n';window.__memoriaNativeText=(window.__memoriaNativeText||'')+nativeText+'\n';
    }
   }else content=await f.text();
   $('programText').value=content;
-  importedRows=parseProgramText(content);
-  $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を抽出。元のPDFと件数・競技名・番号を照合してから反映してください。`:'文字を取得しましたが競技を自動抽出できませんでした。手入力で追加してください。';
+  const visualRows=parseProgramText(content),nativeRows=parseProgramText(window.__memoriaNativeText||'');
+  importedRows=nativeRows.length>visualRows.length?nativeRows:visualRows;
+  $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を抽出。${programWarnings(importedRows)} 元のPDFと件数・競技名・番号を照合してください。`:'文字を取得しましたが競技を自動抽出できませんでした。手入力で追加してください。';
   reviewProgram();
  }catch(err){$('programStatus').textContent='読み取り失敗：'+err.message+'。テキストを貼り付けてください。'}
 };
 $('applyProgram').onclick=async()=>{
  if(!importedRows.length||importedRows.some(e=>!e.name.trim()||!normTime(e.time))){alert('競技を1件以上追加し、名前と時刻を入力してください。');return}
+ const warning=programWarnings(importedRows);if(warning&&!confirm(warning+'\n抜けた競技があるまま反映しますか？'))return;
  if(!confirm('競技一覧を入れ替えます。先にバックアップしましたか？'))return;
  const old=data.events,oldPhotos=data.photos,oldPages=data.pages,newPhotos={},newPages={};
  importedRows.forEach((e,ni)=>{const oi=old.findIndex(x=>x.name===e.name);if(oi<0)return;
