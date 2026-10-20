@@ -41,4 +41,79 @@ $('shareAlbum').onclick=async()=>{
   status.textContent='閲覧専用HTMLを書き出しました。ファイルアプリ等から共有してください。';
  }catch(e){status.textContent='共有ファイルの作成に失敗しました：'+e.message}
 };
+
+// Program import: PDF.js extracts embedded text, not OCR.
+let importedRows=[];
+const normTime=s=>{const m=String(s||'').replace(/[：．]/g,':').match(/([01]?\d|2[0-3])\s*:\s*([0-5]\d)/);return m?m[1].padStart(2,'0')+':'+m[2]:''};
+function parseProgramText(raw){
+ const lines=raw.replace(/\r/g,'').replace(/[　]/g,' ').split('\n').map(x=>x.trim()).filter(Boolean);
+ const out=[];let pending='';
+ for(let line of lines){
+  line=line.replace(/[０-９]/g,c=>String(c.charCodeAt(0)-65296)).replace(/[：]/g,':');
+  if(/^(令和|プログラム|競技|前半|後半|開会|閉会|中間|ハチマキ|諸注意|保護者|会場図)/.test(line))continue;
+  let t=normTime(line);if(!t)continue;
+  // Extract numbered events. PDF text extraction can reorder tokens; review is mandatory.
+  let match=line.match(/^\s*(\d{1,2})\s+(.+?)\s+(全学年|[１２３123]年生|クラブ|部活動|全員)\s+([0-2]?\d\s*:\s*[0-5]\d)/);
+  if(!match)match=line.match(/^\s*(\d{1,2})\s+(.+?)\s+(全学年|[１２３123]年生|クラブ|部活動|全員).*?([0-2]?\d\s*:\s*[0-5]\d)/);
+  if(!match)continue;
+  const n=+match[1];if(n<1||n>99)continue;
+  const grade=/全学年|全員/.test(match[3])?'all':/クラブ|部活動/.test(match[3])?'club':match[3].match(/[123１２３]/)?.[0].replace(/[１２３]/g,c=>String('１２３'.indexOf(c)+1))||'all';
+  out.push({name:match[2].trim(),grade,time:normTime(match[4]),actual:'',highlight:'',spot:''});
+ }
+ return out;
+}
+function reviewProgram(){
+ const host=$('reviewRows');host.innerHTML='';
+ importedRows.forEach((e,i)=>{
+  const row=document.createElement('div');row.className='card';row.style.margin='8px 0';row.innerHTML=`<div class="row between"><strong>競技 ${i+1}</strong><button class="btn alt small" data-remove="${i}">削除</button></div><label>競技名</label><input class="field" data-field="name" value="${safe(e.name)}"><label>対象</label><select class="field" data-field="grade">${[['all','全学年'],['1','1年生'],['2','2年生'],['3','3年生'],['club','クラブ']].map(([v,l])=>`<option value="${v}" ${e.grade===v?'selected':''}>${l}</option>`).join('')}</select><label>予定時刻</label><input class="field" type="time" data-field="time" value="${safe(e.time)}">`;
+  row.querySelectorAll('[data-field]').forEach(el=>el.onchange=()=>{importedRows[i][el.dataset.field]=el.value});
+  row.querySelector('[data-remove]').onclick=()=>{importedRows.splice(i,1);reviewProgram()};host.append(row);
+ });
+ $('programReview').classList.remove('hidden');
+}
+$('addProgramRow').onclick=()=>{importedRows.push({name:'',grade:'all',time:'',actual:'',highlight:'',spot:''});reviewProgram()};
+$('parseProgram').onclick=()=>{
+ importedRows=parseProgramText($('programText').value);
+ $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出しました。必ず内容を確認してください。`:'競技を自動抽出できませんでした。行を追加して手入力できます。';
+ reviewProgram();
+};
+$('programFile').onchange=async e=>{
+ const f=e.target.files[0];if(!f)return;
+ $('programStatus').textContent='読み取り中…';
+ try{
+  let content='';
+  if(/\.pdf$/i.test(f.name)||f.type==='application/pdf'){
+   if(!window.pdfjsLib){
+    const script=document.createElement('script');script.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    await new Promise((resolve,reject)=>{script.onload=resolve;script.onerror=()=>reject(new Error('PDF解析ライブラリを読み込めません。通信環境を確認してください。'));document.head.append(script)});
+   }
+   pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+   const doc=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+   for(let i=1;i<=doc.numPages;i++){
+    const pg=await doc.getPage(i),tc=await pg.getTextContent();
+    // Group fragments into visual lines by their vertical positions.
+    const groups=new Map();
+    for(const item of tc.items){if(!item.str?.trim())continue;const y=Math.round(item.transform[5]/3)*3;const arr=groups.get(y)||[];arr.push({x:item.transform[4],str:item.str});groups.set(y,arr)}
+    content+=[...groups.entries()].sort((a,b)=>b[0]-a[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(v=>v.str).join(' ')).join('\n')+'\n';
+   }
+  }else content=await f.text();
+  $('programText').value=content;
+  importedRows=parseProgramText(content);
+  $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を抽出。内容を確認・修正してから反映してください。`:'文字を取得しましたが競技を自動抽出できませんでした。手入力で追加してください。';
+  reviewProgram();
+ }catch(err){$('programStatus').textContent='読み取り失敗：'+err.message+'。テキストを貼り付けてください。'}
+};
+$('applyProgram').onclick=async()=>{
+ if(!importedRows.length||importedRows.some(e=>!e.name.trim()||!normTime(e.time))){alert('競技を1件以上追加し、名前と時刻を入力してください。');return}
+ if(!confirm('競技一覧を入れ替えます。先にバックアップしましたか？'))return;
+ const old=data.events,oldPhotos=data.photos,oldPages=data.pages,newPhotos={},newPages={};
+ importedRows.forEach((e,ni)=>{const oi=old.findIndex(x=>x.name===e.name);if(oi<0)return;
+  for(const side of ['L','R']){if(oldPages[oi+':'+side])newPages[ni+':'+side]=oldPages[oi+':'+side];
+   for(let j=0;j<2;j++){const v=oldPhotos[oi+':'+side+':'+j];if(v)newPhotos[ni+':'+side+':'+j]=v}}
+  e.highlight=old[oi].highlight||'';e.spot=old[oi].spot||'';
+ });
+ data.events=importedRows.map(e=>({...e}));data.photos=newPhotos;data.pages=newPages;data.current=-1;spread=0;
+ await save();renderEvents();if(open)renderBook();$('programStatus').textContent='新しいプログラムを反映しました。アルバムも競技に合わせて更新されました。';$('programReview').classList.add('hidden');
+};
+
 </script></body></html>
