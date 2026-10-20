@@ -46,7 +46,7 @@ $('shareAlbum').onclick=async()=>{
 let importedRows=[];
 const normTime=s=>{const m=String(s||'').replace(/[：．]/g,':').match(/([01]?\d|2[0-3])\s*:\s*([0-5]\d)/);return m?m[1].padStart(2,'0')+':'+m[2]:''};
 function parseProgramText(raw){
- const normalized=String(raw).normalize('NFKC').replace(/\r/g,'').replace(/[\u00a0\u3000]/g,' ');
+ const normalized=String(raw).normalize('NFKC').replace(/\r/g,'').replace(/[\u00a0\u3000]/g,' ').replace(/\b([012])\s+([0-9])\s*:/g,'$1$2:').replace(/([0-2]?[0-9])\s*:\s*([0-5])\s+([0-9])(?=\s*(?:[~〜～]|$|\n))/g,'$1:$2$3').replace(/([0-2]?[0-9])\s*:\s*([0-5][0-9])/g,'$1:$2');
  const lines=normalized.split('\n').map(x=>x.trim()).filter(Boolean);
  const found=new Map();
  // Read each numbered entry independently, even if a PDF splits its columns across lines.
