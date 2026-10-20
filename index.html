@@ -78,20 +78,39 @@ function mergeProgramRows(...sources){
 // PDF glyph positions: do not round y coordinates into coarse 3pt buckets.
 // Cluster by small vertical tolerance, then order text fragments left-to-right.
 function visualPdfLines(items){
+ // Use a 7-point baseline tolerance: Japanese full-width glyphs and Latin digits
+ // in the same printed row can have different PDF baselines.
  const glyphs=items.filter(x=>x.str?.trim()).map(x=>({x:x.transform[4],y:x.transform[5],str:x.str})).sort((a,b)=>b.y-a.y||a.x-b.x);
  const rows=[];
  for(const glyph of glyphs){
-  let row=rows.find(r=>Math.abs(r.y-glyph.y)<1.15);
+  let row=rows.find(r=>Math.abs(r.y-glyph.y)<=7);
   if(!row){row={y:glyph.y,parts:[]};rows.push(row)}
   row.parts.push(glyph);
  }
  return rows.sort((a,b)=>b.y-a.y).map(r=>r.parts.sort((a,b)=>a.x-b.x).map(p=>p.str).join(' '));
 }
-// Column-oriented PDFs sometimes give each column in a different text stream.
-// Recover each event using the number column's y-coordinate and the nearest cells.
+// Independently reconstruct the numbered table from coordinates, rather than
+// relying on PDF.js text item order or exact glyph baselines.
 function positionPdfRows(items){
- const lines=visualPdfLines(items);
- return parseProgramText(lines.join('\n'));
+ const tokens=items.filter(x=>x.str?.trim()).map(x=>({x:x.transform[4],y:x.transform[5],text:x.str.normalize('NFKC').trim()}));
+ const anchors=[];
+ for(const t of tokens){
+  const m=t.text.match(/^(\d{1,2})(?:\s+(.+))?$/);
+  if(!m||+m[1]<1||+m[1]>60||t.x>130)continue;
+  // Ignore table of class numbers at the bottom: require a nearby event name,
+  // grade and clock time, all on the same baseline.
+  anchors.push({n:+m[1],y:t.y});
+ }
+ const found=[];
+ for(const a of anchors){
+  const near=tokens.filter(t=>Math.abs(t.y-a.y)<=8).sort((u,v)=>u.x-v.x);
+  const text=near.map(t=>t.text).join(' ').replace(/\s+/g,' ');
+  const m=text.match(/(?:^|\s)(\d{1,2})\s+(.+?)\s+(全学年|[123]年生|クラブ|部活動|全員)\s+([0-2]?\d\s*:\s*[0-5]\d)/);
+  if(!m||+m[1]!==a.n)continue;
+  const grade=m[3]==='全学年'||m[3]==='全員'?'all':/クラブ|部活動/.test(m[3])?'club':m[3][0];
+  found.push({number:a.n,name:m[2].trim(),grade,time:normTime(m[4]),actual:'',highlight:'',spot:''});
+ }
+ return mergeProgramRows(found,parseProgramText(visualPdfLines(items).join('\n')));
 }
 function programWarnings(rows){
  const nums=rows.map(x=>x.number).filter(Number.isInteger).sort((a,b)=>a-b);
