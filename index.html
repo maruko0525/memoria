@@ -48,24 +48,50 @@ const normTime=s=>{const m=String(s||'').replace(/[：．]/g,':').match(/([01]?\
 function parseProgramText(raw){
  const normalized=String(raw).normalize('NFKC').replace(/\r/g,'').replace(/[\u00a0\u3000]/g,' ');
  const lines=normalized.split('\n').map(x=>x.trim()).filter(Boolean);
- const out=[];
- // Try line-based extraction, allowing broken rows across up to four lines.
+ const found=new Map();
+ // Read each numbered entry independently, even if a PDF splits its columns across lines.
  for(let i=0;i<lines.length;i++){
   const start=lines[i].match(/^(\d{1,2})\s+(.+)/);
   if(!start)continue;
   const number=+start[1];if(number<1||number>99)continue;
-  let match=null;
   for(let j=i;j<Math.min(i+5,lines.length);j++){
    if(j>i && /^\d{1,2}\s+\S/.test(lines[j]))break;
    const joined=lines.slice(i,j+1).join(' ');
-   match=joined.match(/^\d{1,2}\s+(.+?)\s+(全学年|[123]年生|クラブ|部活動|全員)\s+([0-2]?\d\s*:\s*[0-5]\d)/);
-   if(match)break;
+   const match=joined.match(/^\d{1,2}\s+(.+?)\s+(全学年|[123]年生|クラブ|部活動|全員)\s+([0-2]?\d\s*:\s*[0-5]\d)/);
+   if(!match)continue;
+   const grade=/全学年|全員/.test(match[2])?'all':/クラブ|部活動/.test(match[2])?'club':match[2].match(/[123]/)?.[0]||'all';
+   const name=match[1].trim();if(name.length>55)continue;
+   found.set(number,{number,name,grade,time:normTime(match[3]),actual:'',highlight:'',spot:''});break;
   }
-  if(!match)continue;
-  const grade=/全学年|全員/.test(match[2])?'all':/クラブ|部活動/.test(match[2])?'club':match[2].match(/[123]/)?.[0]||'all';
-  if(!out.some(e=>e.number===number))out.push({number,name:match[1].trim(),grade,time:normTime(match[3]),actual:'',highlight:'',spot:''});
  }
- return out.sort((a,b)=>a.number-b.number);
+ return [...found.values()].sort((a,b)=>a.number-b.number);
+}
+// Merge all independent extraction methods by original printed competition number.
+function mergeProgramRows(...sources){
+ const merged=new Map();
+ for(const rows of sources)for(const row of rows){
+  const prior=merged.get(row.number);
+  if(!prior || (!prior.time&&row.time) || (row.name.length<prior.name.length&&row.name.length>1))merged.set(row.number,row);
+ }
+ return [...merged.values()].sort((a,b)=>a.number-b.number);
+}
+// PDF glyph positions: do not round y coordinates into coarse 3pt buckets.
+// Cluster by small vertical tolerance, then order text fragments left-to-right.
+function visualPdfLines(items){
+ const glyphs=items.filter(x=>x.str?.trim()).map(x=>({x:x.transform[4],y:x.transform[5],str:x.str})).sort((a,b)=>b.y-a.y||a.x-b.x);
+ const rows=[];
+ for(const glyph of glyphs){
+  let row=rows.find(r=>Math.abs(r.y-glyph.y)<1.15);
+  if(!row){row={y:glyph.y,parts:[]};rows.push(row)}
+  row.parts.push(glyph);
+ }
+ return rows.sort((a,b)=>b.y-a.y).map(r=>r.parts.sort((a,b)=>a.x-b.x).map(p=>p.str).join(' '));
+}
+// Column-oriented PDFs sometimes give each column in a different text stream.
+// Recover each event using the number column's y-coordinate and the nearest cells.
+function positionPdfRows(items){
+ const lines=visualPdfLines(items);
+ return parseProgramText(lines.join('\n'));
 }
 function programWarnings(rows){
  const nums=rows.map(x=>x.number).filter(Number.isInteger).sort((a,b)=>a-b);
@@ -101,21 +127,19 @@ $('programFile').onchange=async e=>{
    }
    pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
    const doc=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;
+   window.__memoriaPositionRows=[];
    for(let i=1;i<=doc.numPages;i++){
     const pg=await doc.getPage(i),tc=await pg.getTextContent();
     const nativeLines=[];let nativeLine='';for(const item of tc.items){nativeLine+=(item.str||'')+' ';if(item.hasEOL){nativeLines.push(nativeLine);nativeLine=''}}if(nativeLine.trim())nativeLines.push(nativeLine);
     const nativeText=nativeLines.join('\n');
-    // Group fragments into visual lines by their vertical positions.
-    const groups=new Map();
-    for(const item of tc.items){if(!item.str?.trim())continue;const y=Math.round(item.transform[5]/3)*3;const arr=groups.get(y)||[];arr.push({x:item.transform[4],str:item.str});groups.set(y,arr)}
-    const visualText=[...groups.entries()].sort((a,b)=>b[0]-a[0]).map(([,items])=>items.sort((a,b)=>a.x-b.x).map(v=>v.str).join(' ')).join('\n');
-    // Native PDF order and visual-row order can differ. Retain both and select the most complete parse.
-    content+=visualText+'\n';window.__memoriaNativeText=(window.__memoriaNativeText||'')+nativeText+'\n';
+    const visualText=visualPdfLines(tc.items).join('\n');
+    content+=visualText+'\n';window.__memoriaNativeText+=nativeText+'\n';
+    window.__memoriaPositionRows.push(...positionPdfRows(tc.items));
    }
   }else content=await f.text();
   $('programText').value=content;
   const visualRows=parseProgramText(content),nativeRows=parseProgramText(window.__memoriaNativeText||'');
-  importedRows=nativeRows.length>visualRows.length?nativeRows:visualRows;
+  importedRows=mergeProgramRows(visualRows,nativeRows,window.__memoriaPositionRows||[]);
   $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を抽出。${programWarnings(importedRows)} 元のPDFと件数・競技名・番号を照合してください。`:'文字を取得しましたが競技を自動抽出できませんでした。手入力で追加してください。';
   reviewProgram();
  }catch(err){$('programStatus').textContent='読み取り失敗：'+err.message+'。テキストを貼り付けてください。'}
