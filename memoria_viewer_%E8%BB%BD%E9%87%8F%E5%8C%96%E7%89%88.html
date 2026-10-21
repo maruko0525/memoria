@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light"><title>MEMORIA｜アルバムをひらく</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN',sans-serif;color:#503a30;background:#faf5ed}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 15% 5%,#fff9f0,#f6ebdf 55%,#eee1d5)}header{text-align:center;padding:30px 18px 12px}h1{margin:0;font-family:Georgia,serif;font-size:34px;letter-spacing:.08em;color:#6c4736}header p{font-size:13px;color:#897569;margin:8px 0}.panel{width:min(620px,calc(100% - 30px));margin:16px auto 28px;padding:24px 18px;background:#fffdf8;border:2px solid #e7d6c5;border-radius:22px;box-shadow:0 12px 35px #6b4a2b16;text-align:center}.book{width:125px;height:156px;border-radius:5px 14px 14px 5px;border-left:12px solid #513326;margin:0 auto 18px;background:linear-gradient(115deg,#714c3c,#a8785e 45%,#694332);box-shadow:8px 9px 14px #59443330;display:grid;place-items:center;color:#fff1d9;font-size:38px}.btn{border:0;background:#76513c;color:#fff;padding:15px 24px;border-radius:14px;font-size:16px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;min-height:50px}.btn:focus-visible{outline:3px solid #dcaa6a;outline-offset:3px}.muted{font-size:13px;line-height:1.8;color:#78665c}.status{font-size:13px;min-height:24px;margin-top:12px}.error{color:#ae3e37}#file{display:none}#reader{display:none;position:fixed;inset:0;z-index:5;background:#f2e9de}#reader.active{display:flex;flex-direction:column}.toolbar{height:54px;flex:none;display:flex;align-items:center;gap:10px;justify-content:space-between;background:#fff9f1;border-bottom:1px solid #e2d2c0;padding:6px 12px}.toolbar button{background:#76513c;color:white;border:0;border-radius:9px;padding:10px 13px;font-weight:700}.toolbar span{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}iframe{width:100%;height:100%;border:0;flex:1;background:#f5ede2}.notice{font-size:12px;color:#75645a;line-height:1.8;margin:14px auto;max-width:530px}a{color:#80523d}
+</style></head><body>
+<header><h1>MEMORIA</h1><p>思い出を、一冊のアルバムに。</p></header>
+<main class="panel"><div class="book">✿</div><h2>届いたアルバムをひらく 📖</h2><p class="muted">送られてきた「MEMORIA-思い出アルバム.html」を選んでください。<br>表紙を開いて、ページをめくれます。</p><button class="btn" id="choose" type="button">📂 アルバムを選ぶ</button><input id="file" type="file" accept=".html,.htm,text/html"><div class="status" id="status" role="status" aria-live="polite"></div><p class="notice">写真・動画・メッセージはこのページからサーバーに送信しません。ファイルはこのiPhone内で読み込みます。読み込み後は通信を使わず閲覧できます（ページを閉じると、もう一度ファイル選択が必要です）。</p></main>
+<div id="reader"><div class="toolbar"><button type="button" id="back">← 戻る</button><span id="filename">思い出アルバム</span><span aria-hidden="true">📖</span></div><iframe id="frame" title="受け取ったMEMORIAアルバム" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></div>
+<script>
+'use strict';
+const choose=document.getElementById('choose');
+const input=document.getElementById('file');
+const status=document.getElementById('status');
+const reader=document.getElementById('reader');
+const frame=document.getElementById('frame');
+let activeURL=null;
+let session=0;
+function closeAlbum(){
+  session++;
+  reader.classList.remove('active');
+  frame.removeAttribute('src');
+  document.body.style.overflow='';
+  if(activeURL){URL.revokeObjectURL(activeURL);activeURL=null;}
+}
+choose.addEventListener('click',()=>input.click());
+input.addEventListener('change',()=>{
+  const f=input.files&&input.files[0];
+  if(!f)return;
+  input.value='';
+  status.className='status';
+  if(!/\.html?$/i.test(f.name)){
+    status.className='status error';
+    status.textContent='MEMORIAから書き出したHTMLファイルを選んでください。';
+    return;
+  }
+  // Do not call file.text() or iframe.srcdoc: both duplicate a huge base64 video album in memory.
+  // The original File remains a Blob and is opened through a temporary, local-only object URL.
+  closeAlbum();
+  const thisSession=++session;
+  activeURL=URL.createObjectURL(f);
+  document.getElementById('filename').textContent=f.name;
+  status.textContent='アルバムを開いています…';
+  reader.classList.add('active');
+  document.body.style.overflow='hidden';
+  frame.onload=()=>{if(thisSession===session){status.textContent='';}};
+  frame.onerror=()=>{
+    if(thisSession!==session)return;
+    closeAlbum();
+    status.className='status error';
+    status.textContent='表示に失敗しました。ファイルを再選択してください。';
+  };
+  frame.src=activeURL;
+});
+document.getElementById('back').addEventListener('click',closeAlbum);
+</script></body></html>
