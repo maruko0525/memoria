@@ -181,50 +181,16 @@ function save(){
  });
 }
 function setTab(id){document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===id));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id===id));window.scrollTo({top:0,behavior:'smooth'})}document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
-// Grade filtering works with PDF labels, full-width digits and combined year expressions.
-function memoriaGradeTargets(event){
- const normalize=v=>String(v??'').normalize('NFKC').replace(/\s+/g,'');
- const label=normalize(event.grade);
- const title=normalize(event.name);
- const result=new Set();
- const addYears=t=>{for(const m of t.matchAll(/([1-6])年(?:生|組|児童|生徒)?/g))result.add(m[1]);};
- // A title such as "1年生全員リレー" is a specific year, not all years.
- const titleYears=[...title.matchAll(/([1-6])年(?:生|組|児童|生徒)?/g)].map(m=>m[1]);
- if(titleYears.length===1 && (/^(?:all|全学年|全校|全員|未設定|)$/i.test(label) || /^全員/.test(label))){result.add(titleYears[0]);return result;}
- if(/^(?:all|全学年|全校|全生徒|全児童)$/i.test(label))return new Set(['all']);
- if(/^(?:club|クラブ|部活動)$/i.test(label))return new Set(['club']);
- addYears(label);
- if(!result.size && /^[1-6]$/.test(label))result.add(label);
- if(!result.size && titleYears.length===1)result.add(titleYears[0]);
- if(!result.size)result.add('unknown');
- return result;
-}
 function renderEvents(){
- const school=data.schoolType||'elementary';
- const grades=Array.from({length:(school==='middle'||school==='high')?3:6},(_,i)=>String(i+1));
- const allowed=['all',...grades,'club'];
- if(!allowed.includes(String(data.grade)))data.grade='all';
- const filter=$('filters');
- filter.innerHTML=[`<button type="button" class="pill" data-grade="all">全競技</button>`,...grades.map(g=>`<button type="button" class="pill" data-grade="${g}">${g}年生</button>`),`<button type="button" class="pill" data-grade="club">クラブ</button>`].join('');
- filter.querySelectorAll('[data-grade]').forEach(b=>{const active=b.dataset.grade===String(data.grade);b.classList.toggle('on',active);b.setAttribute('aria-pressed',String(active));});
- const list=data.events.map((e,i)=>({...e,i})).filter(e=>{
-  if(data.grade==='all')return true;
-  const targets=memoriaGradeTargets(e);
-  return targets.has('all')||targets.has(String(data.grade));
- });
- $('count').textContent=list.length+'競技 / 全'+data.events.length+'競技';
- $('events').innerHTML=list.map(e=>`<div class="event"><div class="row between">${e.time?`<span class="time">${safe(e.time)}〜</span>`:''}${data.current===e.i?'<span class="badge">🔴 進行中（手動設定）</span>':''}</div><h3>${e.number||e.i+1}. ${safe(e.name)}</h3><p>${safe(e.grade==='all'?'全学年':e.grade==='club'?'クラブ':String(e.grade||'未設定'))}${e.actual?' ／ 実際の開始：'+safe(e.actual):''}</p><details><summary>見どころ・観戦ポイント・進行を編集</summary><label>見どころ</label><textarea class="field" data-ev="${e.i}" data-key="highlight" rows="2" placeholder="未登録">${safe(e.highlight)}</textarea><label>おすすめ観戦ポイント</label><textarea class="field" data-ev="${e.i}" data-key="spot" rows="2" placeholder="未登録">${safe(e.spot)}</textarea><label>実際の開始時刻（任意）</label><input type="time" class="field" data-ev="${e.i}" data-key="actual" value="${safe(e.actual)}"><button class="btn small" data-current="${e.i}">${data.current===e.i?'進行中を解除':'この競技を進行中にする'}</button></details>${e.highlight?'<p>✨ '+safe(e.highlight)+'</p>':''}${e.spot?'<p>📍 '+safe(e.spot)+'</p>':''}</div>`).join('');
- $('events').querySelectorAll('[data-ev]').forEach(el=>el.addEventListener('change',()=>{data.events[+el.dataset.ev][el.dataset.key]=el.value;save();renderEvents()}));
- $('events').querySelectorAll('[data-current]').forEach(b=>b.onclick=()=>{const i=+b.dataset.current;data.current=data.current===i?-1:i;save();renderEvents()});
-}
-// Attach one listener to the stable parent: buttons can be recreated safely.
-$('filters').addEventListener('click',event=>{
- const button=event.target.closest('button[data-grade]');
- if(!button||!$('filters').contains(button))return;
- event.preventDefault();
- data.grade=button.dataset.grade;
- renderEvents();
- save();
+ const school=data.schoolType||"elementary";
+ const grades=Array.from({length:(school==="middle"||school==="high")?3:6},(_,i)=>String(i+1));
+ const allowed=['all',...grades];if(!allowed.includes(data.grade))data.grade='all';
+ const filter=$('filters');filter.innerHTML=[...grades.map(g=>`<button class="pill" data-grade="${g}">${g}年生</button>`),'<button class="pill" data-grade="all">全競技</button>'].join('');
+ document.querySelectorAll('[data-grade]').forEach(b=>b.classList.toggle('on',b.dataset.grade===data.grade));const list=data.events.map((e,i)=>({...e,i})).filter(e=>data.grade==='all'||String(e.grade||'').normalize('NFKC').replace(/\s+/g,'')===data.grade||/^(?:all|全学年|全校)$/.test(String(e.grade||'').normalize('NFKC').replace(/\s+/g,''))||new RegExp('(?:^|[^0-9])'+data.grade+'年(?:生)?').test(String(e.grade||'').normalize('NFKC')));$('count').textContent=list.length+'競技';$('events').innerHTML=list.map(e=>`<div class="event"><div class="row between">${e.time?`<span class="time">${safe(e.time)}〜</span>`:''}${data.current===e.i?'<span class="badge">🔴 進行中（手動設定）</span>':''}</div><h3>${e.number||e.i+1}. ${safe(e.name)}</h3><p>${e.grade==='all'?'全学年':e.grade==='club'?'クラブ':e.grade+'年生'}${e.actual?' ／ 実際の開始：'+safe(e.actual):''}</p><details><summary>見どころ・観戦ポイント・進行を編集</summary><label>見どころ</label><textarea class="field" data-ev="${e.i}" data-key="highlight" rows="2" placeholder="未登録">${safe(e.highlight)}</textarea><label>おすすめ観戦ポイント</label><textarea class="field" data-ev="${e.i}" data-key="spot" rows="2" placeholder="未登録">${safe(e.spot)}</textarea><label>実際の開始時刻（任意）</label><input type="time" class="field" data-ev="${e.i}" data-key="actual" value="${safe(e.actual)}"><button class="btn small" data-current="${e.i}">${data.current===e.i?'進行中を解除':'この競技を進行中にする'}</button></details>${e.highlight?'<p>✨ '+safe(e.highlight)+'</p>':''}${e.spot?'<p>📍 '+safe(e.spot)+'</p>':''}</div>`).join('');document.querySelectorAll('[data-ev]').forEach(el=>el.addEventListener('change',()=>{data.events[+el.dataset.ev][el.dataset.key]=el.value;save();renderEvents()}));document.querySelectorAll('[data-current]').forEach(b=>b.onclick=()=>{const i=+b.dataset.current;data.current=data.current===i?-1:i;save();renderEvents()})}// Bind to the stable parent, because renderEvents recreates the buttons.
+$('filters').addEventListener('click',function(ev){
+ const b=ev.target.closest('[data-grade]');
+ if(!b||!this.contains(b))return;
+ ev.preventDefault();data.grade=b.getAttribute('data-grade');renderEvents();save();
 });
 const getPage=k=>data.pages[k]||(data.pages[k]={bg:0,custom:''});const slotKey=(s,side,index)=>`${s}:${side}:${index}`;function pageHTML(side){let k=`${spread}:${side}`,p=getPage(k),name=data.events[spread]?.name||'体育祭の思い出';let html=`<div class="page-title">${safe(name)} · ${side==='L'?'左':'右'}ページ</div><div class="photo-grid">`;for(let i=0;i<2;i++){let key=slotKey(spread,side,i),m=data.photos[key];html+=`<button class="photo-tile" data-slot="${key}">${m?`<img alt="思い出の写真" src="${m.thumb||m.src||''}">${m.type==='video'?'<span class="video-icon">▶</span>':''}`:`<div class="empty">＋<br>写真・動画</div>`}<small>${m?'タップして思い出を見る':'タップして登録'}</small></button>`}return html+'</div>'}function renderBook(){if(!open)return;$('cover').classList.add('hidden');$('book').classList.add('show');$('bookNav').classList.remove('hidden');$('albumEditor').classList.remove('hidden');['L','R'].forEach((side,i)=>{let k=`${spread}:${side}`,p=getPage(k),el=$(i?'rightPage':'leftPage');el.className='page '+(i?'right':'left')+' paper'+(p.bg||0);el.style.backgroundImage=p.custom?`url("${p.custom}")`:'';el.style.backgroundSize=p.custom?'cover':'';el.style.backgroundPosition='center';el.innerHTML=pageHTML(side)});$('pageIndicator').textContent=`${spread+1} / ${data.events.length} · ${data.events[spread].name}`;$('prev').disabled=spread===0;$('next').disabled=spread===data.events.length-1;document.querySelectorAll('[data-slot]').forEach(el=>el.onclick=()=>showSlot(el.dataset.slot))}function openCover(){if(open)return;if(!data.events.length){alert('競技プログラムがありません。先にPDFを読み込むか、競技を登録してください。');return;}$('cover').classList.add('opening');setTimeout(()=>{open=true;spread=0;$('cover').classList.remove('opening');renderBook()},440)}$('cover').onclick=openCover;$('cover').onkeydown=e=>{if(e.key==='Enter')openCover()};$('coverBtn').onclick=()=>{open=false;spread=-1;$('cover').classList.remove('hidden');$('book').classList.remove('show');$('bookNav').classList.add('hidden');$('albumEditor').classList.add('hidden')};function flip(delta){if(flipBusy||spread+delta<0||spread+delta>=data.events.length)return;flipBusy=true;$('book').classList.add(delta>0?'flip-next':'flip-prev');setTimeout(()=>{spread+=delta;renderBook()},270);setTimeout(()=>{$('book').classList.remove('flip-next','flip-prev');flipBusy=false},570)}$('prev').onclick=()=>flip(-1);$('next').onclick=()=>flip(1);let touchX=null;$('book').addEventListener('touchstart',e=>{touchX=e.touches[0].clientX},{passive:true});$('book').addEventListener('touchend',e=>{if(touchX!==null){let dx=e.changedTouches[0].clientX-touchX;if(Math.abs(dx)>65)flip(dx<0?1:-1);touchX=null}},{passive:true});
 // Use Blob URLs for iOS Safari video playback; keep Data URLs in data for backups and standalone exports.
@@ -387,7 +353,7 @@ const normTime=s=>{const m=String(s||'').replace(/[：．]/g,':').match(/([01]?\
 const schoolMax=()=>['middle','high'].includes($('schoolType').value)?3:6;
 function detectGrade(value){
  const t=String(value||'').normalize('NFKC').replace(/\s/g,'');
- if(/全学年|全校|全生徒|全児童|全クラス|全学級/.test(t))return 'all';
+ if(/全学年|全校|全員|全生徒|全児童|全クラス|全学級/.test(t))return 'all';
  if(/クラブ|部活動|部活|委員会/.test(t))return 'club';
  const m=t.match(/(?:小学|中学|高校|第)?([1-6])年(?:生|児童|生徒|組)?/);
  if(m)return m[1];
