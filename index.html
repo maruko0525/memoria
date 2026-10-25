@@ -421,14 +421,51 @@ function parseProgramText(raw){
  }
  add();return mergeProgramRows(records,additionalProgramRows(raw));
 }
-function mergeProgramRows(...sources){
- const merged=new Map();
- for(const rows of sources)for(const row of rows){
-  if(!row||!Number.isInteger(+row.number)||+row.number<1||+row.number>99)continue;
-  const n=+row.number,old=merged.get(n),score=r=>(r.name?.length||0)+(r.grade!=='all'?15:0)+(r.time?10:0);
-  if(!old||score(row)>score(old))merged.set(n,{...row,number:n});
+function normalizeProgramCandidate(row){
+ if(!row)return null;
+ const r={...row};let name=String(r.name||'').normalize('NFKC').replace(/\s+/g,' ').trim();
+ // PDF text often embeds note paragraphs and following program items into an event title.
+ name=name.replace(/(?:※\s*天候|あらかじめご了承|個人で撮影|SNS\s*等|ネット上にアップ|保護者の皆様|注意事項|連絡事項)[\s\S]*$/i,'').trim();
+ name=name.replace(/\s*(?:[.．・…]{3,}\s*)+$/g,'').trim();
+ const first=name.match(/^([1-9]\d?)\s*[.．、)）]\s*(.+)$/);
+ if(first){
+  if(+first[1]===+r.number){name=first[2].trim()}
+  else {r._review='番号'+r.number+'の競技名に番号'+first[1]+'が混入しています';}
  }
- return [...merged.values()].sort((a,b)=>a.number-b.number);
+ if(r.grade==='all'){
+  const matches=[...name.matchAll(/([1-6])\s*年\s*生?/g)];
+  if(matches.length===1){r.grade=matches[0][1];name=name.replace(/\s*[.．・…]{2,}\s*([1-6])\s*年\s*生?\s*$/,'').trim()}
+ }
+ r.name=name;
+ if(name.length>70)r._review=(r._review?r._review+'／':'')+'競技名が長いため確認してください';
+ if(/(?:閉会のことば|閉会式|開会のことば|整理体操)/.test(name))r._review=(r._review?r._review+'／':'')+'式・体操などの項目（競技として残すか確認）';
+ return r;
+}
+function mergeProgramRows(...sources){
+ const candidates=new Map();
+ for(const rows of sources)for(const raw of rows){
+  if(!raw||!Number.isInteger(+raw.number)||+raw.number<1||+raw.number>99)continue;
+  const row=normalizeProgramCandidate(raw);if(!row?.name)continue;
+  const n=+row.number;if(!candidates.has(n))candidates.set(n,[]);
+  candidates.get(n).push({...row,number:n});
+ }
+ const merged=[];
+ for(const [n,options] of candidates){
+  const ranked=options.map(r=>{
+   let score=(r.grade!=='all'?12:0)+(r.time?7:0);
+   // A detected embedded second number is not a reliable record.
+   if(r._review?.includes('混入'))score-=100;
+   if(r.name.length>88)score-=35;
+   if(/(?:あらかじめ|写真.*動画|天候不順|SNS)/.test(r.name))score-=40;
+   score+=Math.min(r.name.length,48)*0.12;
+   return {r,score};
+  }).sort((a,b)=>b.score-a.score);
+  const best=ranked[0].r;
+  if(ranked.every(x=>x.r._review?.includes('混入'))){
+   merged.push({...best,name:'【要確認】'+n+'番の競技名を確認',_review:'別の番号が競技名に混入しています'});
+  }else merged.push(best);
+ }
+ return merged.sort((a,b)=>a.number-b.number);
 }
 function visualPdfLines(items){
  const glyphs=items.filter(x=>x.str?.trim()).map(x=>({x:x.transform[4],y:x.transform[5],str:x.str})).sort((a,b)=>b.y-a.y||a.x-b.x);
@@ -450,6 +487,52 @@ function positionPdfRows(items){
  }
  return mergeProgramRows(found,parseProgramText(visualPdfLines(items).join('\n')));
 }
+// 構造→番号・名称→属性の順に解析。PDFのレイアウトが曖昧なら確認対象にする。
+function stagedProgramRows(raw){
+ const original=cleanProgramLines(raw||'');
+ const lines=original.split('\n').map(s=>s.trim()).filter(Boolean);
+ const isNote=t=>/^(?:※|＊|\*|注(?:意|記)|お願い|保護者|ご来場|ご協力|あらかじめ|天候|本日の|撮影|写真|動画|SNS|プログラムの|連絡事項|閉会後|お知らせ)/i.test(t);
+ const isHeader=t=>/^(?:プログラム|運動会|体育祭|競技一覧|順番|番号|競技名|種目|学年|時刻|時間|備考|No\.?)$/i.test(t);
+ const markers=[];
+ // 最初に番号の見つかる行だけを集める。時刻や日付、学年を番号と誤認しない。
+ for(let i=0;i<lines.length;i++){
+  const m=lines[i].match(/^(?:第\s*)?([1-9]|[1-9]\d)\s*(?:[.．、)）:：]|番(?:目)?)(?!\d)\s*(.*)$/);
+  if(!m)continue;
+  const n=Number(m[1]);if(n>60)continue;
+  markers.push({i,n,remainder:m[2]||''});
+ }
+ const numbers=[...new Set(markers.map(m=>m.n))].sort((a,b)=>a-b);
+ const records=[];
+ for(let j=0;j<markers.length;j++){
+  const m=markers[j],end=j+1<markers.length?markers[j+1].i:lines.length;
+  // 同じ番号がページヘッダに重複するときは後で候補比較する。
+  const segment=[m.remainder];
+  for(let k=m.i+1;k<Math.min(end,m.i+7);k++){
+   const t=lines[k];if(isNote(t)||isHeader(t)||/^(?:開会|閉会|おわり|諸注意)/.test(t))break;
+   if(t.length>100)break;
+   segment.push(t);
+  }
+  let joined=segment.filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  joined=joined.replace(/(?:※|＊|\*|注意事項|お願い|写真・動画|個人で撮影|SNS|あらかじめご了承)[\s\S]*$/i,'').trim();
+  // 名前の確定は属性の抽出に先行させる。
+  const gradeTail=joined.match(/(?:全\s*学\s*年|全\s*員|[1-6]\s*年\s*生?)(?:\s*[、／/・]\s*[1-6]\s*年\s*生?)*\s*$/);
+  let grade='all';
+  if(gradeTail){grade=detectGrade(gradeTail[0])||'all';joined=joined.slice(0,gradeTail.index).trim()}
+  const time=normTime(joined)||'';
+  if(time)joined=joined.replace(/(?:[01]?\d|2[0-3])\s*[:：]\s*[0-5]\d/g,'').trim();
+  joined=joined.replace(/(?:\.{3,}|…{2,}|・{3,})/g,' ').trim();
+  if(!joined||isNote(joined)||isHeader(joined))continue;
+  const review=[];
+  if(joined.length>55)review.push('競技名と別の文章が連結している可能性');
+  if(/\s\d{1,2}\s*[.．、)）]\s*\S/.test(joined))review.push('別の競技番号の混入');
+  records.push({number:m.n,name:joined,grade,time,actual:'',highlight:'',spot:'',_review:review.join('／')});
+ }
+ const primary=mergeProgramRows(records);
+ // 構造解析で拾えなかった番号のみ、従来抽出結果から補完する。
+ const seen=new Set(primary.map(r=>r.number));
+ const backup=mergeProgramRows(parseProgramText(raw),additionalProgramRows(raw));
+ return mergeProgramRows(primary,backup.filter(r=>!seen.has(r.number)));
+}
 function fillProgramNumberGaps(rows, raw){
  const merged=mergeProgramRows(rows);const nums=merged.map(r=>+r.number).filter(n=>n>=1&&n<=99);
  const max=Math.max(0,...nums);
@@ -467,14 +550,15 @@ function programWarnings(rows){
  const nums=[...new Set(rows.map(r=>+r.number).filter(Number.isInteger))].sort((a,b)=>a-b);
  const missing=[];for(let n=1;n<=(nums.at(-1)||0);n++)if(!nums.includes(n))missing.push(n);
  const wrong=rows.filter(r=>/^[1-6]$/.test(r.grade)&&+r.grade>schoolMax());
- return [missing.length?'⚠️ 未検出の競技番号：'+missing.join('、'): '',wrong.length?'⚠️ 選んだ学校種別の学年範囲外：'+wrong.map(r=>r.number).join('、'): ''].filter(Boolean).join('　');
+ const uncertain=rows.filter(r=>r._review||/【要確認】/.test(r.name||''));
+ return [missing.length?'⚠️ 未検出の競技番号：'+missing.join('、'): '',wrong.length?'⚠️ 選んだ学校種別の学年範囲外：'+wrong.map(r=>r.number).join('、'): '',uncertain.length?'⚠️ 内容要確認：'+uncertain.map(r=>r.number).join('、')+'番': ''].filter(Boolean).join('　');
 }
 function reviewProgram(){
  const host=$('reviewRows');host.innerHTML='';const max=schoolMax();
  const order=importedRows.map((x,i)=>({x,i})).sort((a,b)=>+a.x.number-+b.x.number);
  for(const {x:e,i} of order){
   const row=document.createElement('div');row.className='card';row.style.margin='8px 0';
-  row.innerHTML=`<div class="row between"><strong>競技番号 <input class="field" data-field="number" type="number" min="1" max="99" value="${Number(e.number)||i+1}" style="width:85px;display:inline-block"></strong><button class="btn alt small" data-remove="${i}">削除</button></div><label>競技名</label><input class="field" data-field="name" value="${safe(e.name)}"><label>対象学年</label><select class="field" data-field="grade">${[['all','全学年'],...Array.from({length:max},(_,i)=>[String(i+1),`${i+1}年生`]),['club','クラブ・部活動']].map(([v,l])=>`<option value="${v}" ${e.grade===v?'selected':''}>${l}</option>`).join('')}${/^[1-6]$/.test(e.grade)&&+e.grade>max?`<option value="${e.grade}" selected>${e.grade}年生（要修正）</option>`:''}</select><label>予定時刻（任意）</label><input class="field" data-field="time" placeholder="例 09:20" value="${safe(e.time||'')}">`;
+  row.innerHTML=`${e._review?`<p class="notice">⚠️ 要確認：${safe(e._review)}</p>`:''}<div class="row between"><strong>競技番号 <input class="field" data-field="number" type="number" min="1" max="99" value="${Number(e.number)||i+1}" style="width:85px;display:inline-block"></strong><button class="btn alt small" data-remove="${i}">削除</button></div><label>競技名</label><input class="field" data-field="name" value="${safe(e.name)}"><label>対象学年</label><select class="field" data-field="grade">${[['all','全学年'],...Array.from({length:max},(_,i)=>[String(i+1),`${i+1}年生`]),['club','クラブ・部活動']].map(([v,l])=>`<option value="${v}" ${e.grade===v?'selected':''}>${l}</option>`).join('')}${/^[1-6]$/.test(e.grade)&&+e.grade>max?`<option value="${e.grade}" selected>${e.grade}年生（要修正）</option>`:''}</select><label>予定時刻（任意）</label><input class="field" data-field="time" placeholder="例 09:20" value="${safe(e.time||'')}">`;
   row.querySelectorAll('[data-field]').forEach(el=>el.onchange=()=>{importedRows[i][el.dataset.field]=el.dataset.field==='number'?Number(el.value):el.value;updateReviewSummary()});
   row.querySelector('[data-remove]').onclick=()=>{importedRows.splice(i,1);reviewProgram()};host.append(row);
  }
@@ -487,7 +571,7 @@ function updateReviewSummary(){
 $('schoolType').value=data.schoolType||'elementary';
 $('schoolType').onchange=()=>{if(importedRows.length)reviewProgram();$('programStatus').textContent='学校種別を選択しました。PDFを読み込んでください。'};
 $('addProgramRow').onclick=()=>{const next=Math.max(0,...importedRows.map(x=>+x.number||0))+1;importedRows.push({number:next,name:'',grade:'all',time:'',actual:'',highlight:'',spot:''});reviewProgram()};
-$('parseProgram').onclick=()=>{importedRows=fillProgramNumberGaps(parseProgramText($('programText').value),$('programText').value);$('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出。${programWarnings(importedRows)} 読み取り結果を確認してください。`:'自動抽出できませんでした。「競技を追加」から入力できます。';reviewProgram()};
+$('parseProgram').onclick=()=>{importedRows=fillProgramNumberGaps(stagedProgramRows($('programText').value),$('programText').value);$('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出。${programWarnings(importedRows)} 読み取り結果を確認してください。`:'自動抽出できませんでした。「競技を追加」から入力できます。';reviewProgram()};
 $('programFile').onchange=async e=>{
  const f=e.target.files[0];if(!f)return;$('programStatus').textContent='全ページの文字を解析中…';
  try{
@@ -503,7 +587,7 @@ $('programFile').onchange=async e=>{
    }
   }else content=await f.text();
   $('programText').value=content;
-  importedRows=fillProgramNumberGaps(mergeProgramRows(parseProgramText(native),parseProgramText(content),position,additionalProgramRows(native),additionalProgramRows(content)),native+"\n"+content);
+  importedRows=fillProgramNumberGaps(mergeProgramRows(stagedProgramRows(content),stagedProgramRows(native),position),native+"\n"+content);
   $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を抽出しました。${programWarnings(importedRows)} PDFの競技番号と照合してください。読み取れない文字があれば確認画面で補ってください。`:'文字は取得しましたが競技を検出できません。画像だけのPDFの場合は文字入力が必要です。';reviewProgram();
  }catch(err){$('programStatus').textContent='読み取り失敗：'+err.message}
 };
