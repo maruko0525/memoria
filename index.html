@@ -471,6 +471,20 @@ function mergeProgramRows(...sources){
    merged.push({...best,name:'【要確認】'+n+'番の競技名を確認',_review:'別の番号が競技名に混入しています'});
   }else merged.push(best);
  }
+ // A one-digit marker can be a fragment of an eleven-or-higher marker in PDF extraction.
+ // Never silently present the same title under two distinct program numbers.
+ const keyOf=r=>String(r.name||'').normalize('NFKC').replace(/(?:^|\s)(?:徒競走|団演|団競|リレー)\s*/g,'').replace(/[\s　・.．、,～〜~!！?？…\-]/g,'').toLowerCase();
+ const byNumber=new Map(merged.map(r=>[r.number,r]));
+ for(const row of merged){
+  if(row.number<10){
+   const twin=byNumber.get(row.number+10);
+   if(twin && keyOf(row).length>=5 && keyOf(row)===keyOf(twin)){
+    row.name='【要確認】'+row.number+'番の正しい競技名を入力';
+    row.grade='all';
+    row._review='番号'+row.number+'と'+twin.number+'の誤認識を検出：PDFの元の競技名を確認';
+   }
+  }
+ }
  return merged.sort((a,b)=>a.number-b.number);
 }
 function visualPdfLines(items){
