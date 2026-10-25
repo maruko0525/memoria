@@ -427,6 +427,9 @@ function normalizeProgramCandidate(row){
  // PDF text often embeds note paragraphs and following program items into an event title.
  name=name.replace(/(?:※\s*天候|あらかじめご了承|個人で撮影|SNS\s*等|ネット上にアップ|保護者の皆様|注意事項|連絡事項)[\s\S]*$/i,'').trim();
  name=name.replace(/\s*(?:[.．・…]{3,}\s*)+$/g,'').trim();
+ // Separate ceremony and captions that PDF extraction joins after a grade marker.
+ name=name.replace(/\s+(?:閉\s*会\s*式|閉会のことば|開\s*会\s*式)(?:\s|$)[\s\S]*$/,'').trim();
+ name=name.replace(/((?:全\s*学\s*年|全\s*校|[1-6]\s*年\s*生?))\s+(?:閉\s*会\s*式|閉会のことば|開\s*会\s*式)[\s\S]*$/,'$1').trim();
  const first=name.match(/^([1-9]\d?)\s*[.．、)）]\s*(.+)$/);
  if(first){
   if(+first[1]===+r.number){name=first[2].trim()}
@@ -439,6 +442,8 @@ function normalizeProgramCandidate(row){
  r.name=name;
  if(name.length>70)r._review=(r._review?r._review+'／':'')+'競技名が長いため確認してください';
  if(/(?:閉会のことば|閉会式|開会のことば|整理体操)/.test(name))r._review=(r._review?r._review+'／':'')+'式・体操などの項目（競技として残すか確認）';
+ // Review messages are advisory; avoid duplicate warnings across parser passes.
+ if(r._review)r._review=[...new Set(r._review.split('／').map(v=>v.trim()).filter(Boolean))].join('／');
  return r;
 }
 function mergeProgramRows(...sources){
@@ -461,6 +466,7 @@ function mergeProgramRows(...sources){
    return {r,score};
   }).sort((a,b)=>b.score-a.score);
   const best=ranked[0].r;
+  if(best._review)best._review=[...new Set(best._review.split('／').map(x=>x.trim()).filter(Boolean))].join('／');
   if(ranked.every(x=>x.r._review?.includes('混入'))){
    merged.push({...best,name:'【要確認】'+n+'番の競技名を確認',_review:'別の番号が競技名に混入しています'});
   }else merged.push(best);
@@ -514,6 +520,8 @@ function stagedProgramRows(raw){
   }
   let joined=segment.filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
   joined=joined.replace(/(?:※|＊|\*|注意事項|お願い|写真・動画|個人で撮影|SNS|あらかじめご了承)[\s\S]*$/i,'').trim();
+  // A layout row can contain grade then an unnumbered ceremony. Keep the grade, not the next title.
+  joined=joined.replace(/((?:全\s*学\s*年|全\s*校|[1-6]\s*年\s*生?))\s+(?:閉\s*会\s*式|開\s*会\s*式|閉会のことば)[\s\S]*$/,'$1').trim();
   // 名前の確定は属性の抽出に先行させる。
   const gradeTail=joined.match(/(?:全\s*学\s*年|全\s*員|[1-6]\s*年\s*生?)(?:\s*[、／/・]\s*[1-6]\s*年\s*生?)*\s*$/);
   let grade='all';
@@ -558,7 +566,7 @@ function reviewProgram(){
  const order=importedRows.map((x,i)=>({x,i})).sort((a,b)=>+a.x.number-+b.x.number);
  for(const {x:e,i} of order){
   const row=document.createElement('div');row.className='card';row.style.margin='8px 0';
-  row.innerHTML=`${e._review?`<p class="notice">⚠️ 要確認：${safe(e._review)}</p>`:''}<div class="row between"><strong>競技番号 <input class="field" data-field="number" type="number" min="1" max="99" value="${Number(e.number)||i+1}" style="width:85px;display:inline-block"></strong><button class="btn alt small" data-remove="${i}">削除</button></div><label>競技名</label><input class="field" data-field="name" value="${safe(e.name)}"><label>対象学年</label><select class="field" data-field="grade">${[['all','全学年'],...Array.from({length:max},(_,i)=>[String(i+1),`${i+1}年生`]),['club','クラブ・部活動']].map(([v,l])=>`<option value="${v}" ${e.grade===v?'selected':''}>${l}</option>`).join('')}${/^[1-6]$/.test(e.grade)&&+e.grade>max?`<option value="${e.grade}" selected>${e.grade}年生（要修正）</option>`:''}</select><label>予定時刻（任意）</label><input class="field" data-field="time" placeholder="例 09:20" value="${safe(e.time||'')}">`;
+  row.innerHTML=`${e._review?`<p class="notice">⚠️ 要確認：${safe([...new Set(String(e._review).split('／').map(x=>x.trim()).filter(Boolean))].join('／'))}</p>`:''}<div class="row between"><strong>競技番号 <input class="field" data-field="number" type="number" min="1" max="99" value="${Number(e.number)||i+1}" style="width:85px;display:inline-block"></strong><button class="btn alt small" data-remove="${i}">削除</button></div><label>競技名</label><input class="field" data-field="name" value="${safe(e.name)}"><label>対象学年</label><select class="field" data-field="grade">${[['all','全学年'],...Array.from({length:max},(_,i)=>[String(i+1),`${i+1}年生`]),['club','クラブ・部活動']].map(([v,l])=>`<option value="${v}" ${e.grade===v?'selected':''}>${l}</option>`).join('')}${/^[1-6]$/.test(e.grade)&&+e.grade>max?`<option value="${e.grade}" selected>${e.grade}年生（要修正）</option>`:''}</select><label>予定時刻（任意）</label><input class="field" data-field="time" placeholder="例 09:20" value="${safe(e.time||'')}">`;
   row.querySelectorAll('[data-field]').forEach(el=>el.onchange=()=>{importedRows[i][el.dataset.field]=el.dataset.field==='number'?Number(el.value):el.value;updateReviewSummary()});
   row.querySelector('[data-remove]').onclick=()=>{importedRows.splice(i,1);reviewProgram()};host.append(row);
  }
