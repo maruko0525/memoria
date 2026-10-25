@@ -568,6 +568,41 @@ function fillProgramNumberGaps(rows, raw){
  }
  return mergeProgramRows(merged,additions);
 }
+// Reverse lookup: use the verified start of event 2 as the right boundary for event 1.
+// Never reinterpret the initial digit of 11 as event 1.
+function recoverFirstBeforeSecond(rows,raw){
+ const first=rows.find(r=>+r.number===1),second=rows.find(r=>+r.number===2);
+ if(!first||!second||!/【要確認】/.test(first.name||''))return rows;
+ const lines=cleanProgramLines(raw||'').split('\n').map(x=>x.trim()).filter(Boolean);
+ const marker=/^(?:第\s*)?([1-9]|[1-9]\d)\s*(?:[.．、)）:：]|番(?:目)?)(?!\d)\s*(.*)$/;
+ const found=[];
+ for(let i=0;i<lines.length;i++){
+  const m=lines[i].match(marker);if(m)found.push({i,n:+m[1],tail:m[2]});
+ }
+ // The first complete 2 marker bounds an actual first event. Later 11 markers
+ // do not influence this bounded region.
+ const two=found.find(m=>m.n===2);
+ if(!two)return rows;
+ const ones=found.filter(m=>m.n===1&&m.i<two.i);
+ const one=ones.at(-1);
+ if(!one)return rows;
+ const segment=[one.tail];
+ for(let i=one.i+1;i<two.i&&i<one.i+6;i++){
+  const t=lines[i];if(/^(?:※|注意|お願い|開会式|閉会式|保護者)/.test(t))break;
+  if(t.length>90)break;
+  segment.push(t);
+ }
+ let joined=segment.filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+ joined=joined.replace(/(?:※|注意事項|お願い|写真・動画|SNS)[\s\S]*$/,'').trim();
+ const gradeTail=joined.match(/(?:全\s*学\s*年|[1-6]\s*年\s*生?)\s*$/);
+ let grade='all';if(gradeTail){grade=detectGrade(gradeTail[0])||'all';joined=joined.slice(0,gradeTail.index).trim()}
+ joined=joined.replace(/(?:\.{3,}|…{2,}|・{3,})/g,' ').trim();
+ const eleven=rows.find(r=>+r.number===11);
+ const simplify=t=>String(t||'').normalize('NFKC').replace(/[\s、・.．!！~～〜…]/g,'').toLowerCase();
+ if(!joined||joined.length<3||joined.length>75||simplify(joined)===simplify(eleven?.name)||/【要確認】/.test(joined))return rows;
+ first.name=joined;first.grade=grade;first._review='2番の開始位置から逆引きした1番の候補：PDFと照合してください';
+ return rows;
+}
 function programWarnings(rows){
  const nums=[...new Set(rows.map(r=>+r.number).filter(Number.isInteger))].sort((a,b)=>a-b);
  const missing=[];for(let n=1;n<=(nums.at(-1)||0);n++)if(!nums.includes(n))missing.push(n);
@@ -593,7 +628,7 @@ function updateReviewSummary(){
 $('schoolType').value=data.schoolType||'elementary';
 $('schoolType').onchange=()=>{if(importedRows.length)reviewProgram();$('programStatus').textContent='学校種別を選択しました。PDFを読み込んでください。'};
 $('addProgramRow').onclick=()=>{const next=Math.max(0,...importedRows.map(x=>+x.number||0))+1;importedRows.push({number:next,name:'',grade:'all',time:'',actual:'',highlight:'',spot:''});reviewProgram()};
-$('parseProgram').onclick=()=>{importedRows=fillProgramNumberGaps(stagedProgramRows($('programText').value),$('programText').value);$('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出。${programWarnings(importedRows)} 読み取り結果を確認してください。`:'自動抽出できませんでした。「競技を追加」から入力できます。';reviewProgram()};
+$('parseProgram').onclick=()=>{importedRows=recoverFirstBeforeSecond(fillProgramNumberGaps(stagedProgramRows($('programText').value),$('programText').value),$('programText').value);$('programStatus').textContent=importedRows.length?`${importedRows.length}競技を検出。${programWarnings(importedRows)} 読み取り結果を確認してください。`:'自動抽出できませんでした。「競技を追加」から入力できます。';reviewProgram()};
 $('programFile').onchange=async e=>{
  const f=e.target.files[0];if(!f)return;$('programStatus').textContent='全ページの文字を解析中…';
  try{
@@ -609,7 +644,7 @@ $('programFile').onchange=async e=>{
    }
   }else content=await f.text();
   $('programText').value=content;
-  importedRows=fillProgramNumberGaps(mergeProgramRows(stagedProgramRows(content),stagedProgramRows(native),position),native+"\n"+content);
+  importedRows=recoverFirstBeforeSecond(fillProgramNumberGaps(mergeProgramRows(stagedProgramRows(content),stagedProgramRows(native),position),native+"\n"+content),native+"\n"+content);
   $('programStatus').textContent=importedRows.length?`${importedRows.length}競技を抽出しました。${programWarnings(importedRows)} PDFの競技番号と照合してください。読み取れない文字があれば確認画面で補ってください。`:'文字は取得しましたが競技を検出できません。画像だけのPDFの場合は文字入力が必要です。';reviewProgram();
  }catch(err){$('programStatus').textContent='読み取り失敗：'+err.message}
 };
